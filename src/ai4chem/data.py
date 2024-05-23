@@ -20,17 +20,17 @@ class PhotoEmissionDataset(Dataset):
         absorption_max: str = 'absorption_max',
         emission_max: str = 'emission_max'
     ):
-        self._chromophore_smiles = chromophore_smiles
+        self._chromophore_smiles_column = chromophore_smiles
         self._solvent_smiles_column = solvent_smiles
         self._absorption_max_column = absorption_max
         self._emission_max_column = emission_max
 
         self.raw_data = pd.read_csv(data_file)
-        self.clean_data = self.raw_data.dropna(axis='index')
+        self.clean_data = self.raw_data.dropna(axis='index', subset=[self._chromophore_smiles_column, self._solvent_smiles_column, self._absorption_max_column, self._emission_max_column])
 
         if canonicalize_smiles:
-            self.clean_data.loc[:,self._chromophore_smiles
-                            ] = self.clean_data[self._chromophore_smiles].apply(Chem.CanonSmiles)
+            self.clean_data.loc[:,self._chromophore_smiles_column
+                            ] = self.clean_data[self._chromophore_smiles_column].apply(Chem.CanonSmiles)
             self.clean_data.loc[:,self._solvent_smiles_column
                             ] = self.clean_data[self._solvent_smiles_column].apply(Chem.CanonSmiles)
 
@@ -48,7 +48,7 @@ class PhotoEmissionDataset(Dataset):
         """
 
         row = self.clean_data.iloc[idx]
-        chromophore_smiles = row[self._chromophore_smiles]
+        chromophore_smiles = row[self._chromophore_smiles_column]
         solvent_smiles = row[self._solvent_smiles_column]
         absorption_max = row[self._absorption_max_column]
         emission_max = row[self._emission_max_column]

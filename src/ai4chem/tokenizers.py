@@ -6,7 +6,7 @@ from typing import List, Callable
 
 import tiktoken
 
-__all__ = ('schwaller_smiles_regex', 'Tokenizer', 'gpt_num_tokens_from_messages')
+__all__ = ('schwaller_smiles_regex', 'get_vocabulary', 'Tokenizer', 'gpt_num_tokens_from_messages')
 
 
 def schwaller_smiles_regex(smiles: str) -> List[str]:
@@ -22,6 +22,19 @@ def schwaller_smiles_regex(smiles: str) -> List[str]:
     SMI_REGEX_PATTERN = r"""(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\|\/|:|~|@|\?|>>?|\*|\$|\%[0-9]{2}|[0-9])"""
 
     return re.findall(SMI_REGEX_PATTERN, smiles)
+
+
+def get_vocabulary(smiles: List[str], tokenizer: Callable=schwaller_smiles_regex) -> List[str]:
+    """
+    Get the vocabulary of a list of SMILES strings.
+
+    Args:
+        smiles (List[str]): List of SMILES strings
+
+    Returns:
+        List[str]: List of unique tokens
+    """
+    return list(set([token for smiles in smiles for token in tokenizer(smiles)]))
 
 
 class Tokenizer:
@@ -56,22 +69,28 @@ class Tokenizer:
     def __contains__(self, item):
         return item in self.vocabulary
 
-    def encode(self, smiles: str, tokenizer: Callable=schwaller_smiles_regex, add_sos: bool=False, add_eos: bool=False) -> List[int]:
+    def encode(self, smiles: str, tokenizer: Callable=schwaller_smiles_regex, add_bos: bool=False, add_eos: bool=False, pad_to_length: int=0, pad_justify: str='left') -> List[int]:
         """
         Encode a SMILES into a list of indices
 
         Args:
             smiles (str): SMILES string
-            add_sos (bool): Add start of sentence token
+            add_bos (bool): Add beginning of sentence token
             add_eos (bool): Add end of sentence token
+            pad_to_length (int): Pad to a certain length
 
         Returns:
             List[int]: List of indices
         """
+        smiles_tokens = tokenizer(smiles)
         tokens = []
-        if add_sos:
+        if add_bos:
             tokens.append(self.token_to_index('[BOS]'))
-        tokens += [self.token_to_index(token) for token in tokenizer(smiles)]
+        if pad_to_length > 0 and pad_justify == 'right':
+            tokens += [self.token_to_index('[PAD]')] * (pad_to_length - len(smiles_tokens))
+        tokens += [self.token_to_index(token) for token in smiles_tokens]
+        if pad_to_length > 0 and pad_justify == 'left':
+            tokens += [self.token_to_index('[PAD]')] * (pad_to_length - len(smiles_tokens))
         if add_eos:
             tokens.append(self.token_to_index('[EOS]'))
         return tokens

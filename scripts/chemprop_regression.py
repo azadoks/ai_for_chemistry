@@ -5,6 +5,7 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 import pathlib as pl
 
+import torch
 import pandas as pd
 from lightning import pytorch as pl
 
@@ -12,17 +13,38 @@ from chemprop import data, featurizers, nn
 from chemprop.nn import metrics
 from chemprop.models import multi
 
+# Trade off precision for performance on NVIDIA RTX cards
+torch.set_float32_matmul_precision('medium')  # 'high' also an option
+
 # %%
+keep_columns = ['CHROMOPHORE_SMILES', 'SOLVENT_SMILES', 'EMISSION_MAX_NM', 'ABSORPTION_MAX_NM']
+
 smiles_columns = ['CHROMOPHORE_SMILES', 'SOLVENT_SMILES']
-target_columns = ['EMISSION_MAX_NM', 'ABSORPTION_MAX_NM']
+# target_columns = ['EMISSION_MAX_NM', 'ABSORPTION_MAX_NM']
+target_columns = ['EMISSION_MAX_EV', 'ABSORPTION_MAX_EV']
 
 df = pd.concat([
     pd.read_json('../data/combined/train.json'),
     pd.read_json('../data/combined/validate.json'),
     pd.read_json('../data/combined/test.json')
-]).loc[:, smiles_columns + target_columns]
+]).loc[:, keep_columns]
 df = df.where(df != None)
 df = df.dropna(axis='index')
+df = df.reset_index()
+df['ID'] = df.index
+
+unique_chromophores = df['CHROMOPHORE_SMILES'].unique()
+chromophore_classes = {smi: i for i, smi in enumerate(unique_chromophores)}
+df['CHROMOPHORE_CLASS'] = df['CHROMOPHORE_SMILES'].apply(lambda x: chromophore_classes[x])
+
+unique_solvents = df['SOLVENT_SMILES'].unique()
+solvent_classes = {smi: i for i, smi in enumerate(unique_solvents)}
+df['SOLVENT_CLASS'] = df['SOLVENT_SMILES'].apply(lambda x: solvent_classes[x])
+
+h = 4.135667696e-15  # eV s
+c = 299792458  # m/s
+df['EMISSION_MAX_EV'] = h * c / (df['EMISSION_MAX_NM'] * 1e-9)
+df['ABSORPTION_MAX_EV'] = h * c / (df['ABSORPTION_MAX_NM'] * 1e-9)
 
 df.shape
 # %%
@@ -35,7 +57,8 @@ all_data += [[data.MoleculeDatapoint.from_smi(smis[i]) for smis in X] for i in r
 # %%
 component_to_split_by = 0 # index of the component to use for structure based splits
 mols = [d.mol for d in all_data[component_to_split_by]]
-train_indices, val_indices, test_indices = data.make_split_indices(mols=mols, split="random", sizes=(0.8, 0.1, 0.1))
+# Use random_with_repeated_smiles to ensure that the same molecule is not in both the training and validation sets
+train_indices, val_indices, test_indices = data.make_split_indices(mols=mols, split="random_with_repeated_smiles", sizes=(0.8, 0.1, 0.1), seed=42)
 train_data, val_data, test_data = data.split_data_by_indices(
     all_data, train_indices, val_indices, test_indices
 )
@@ -47,13 +70,13 @@ val_datasets = [data.MoleculeDataset(val_data[i], featurizer) for i in range(len
 test_datasets = [data.MoleculeDataset(test_data[i], featurizer) for i in range(len(smiles_columns))]
 # %%
 train_mcdset = data.MulticomponentDataset(train_datasets)
-scaler = train_mcdset.normalize_targets()
+# scaler = train_mcdset.normalize_targets()
 val_mcdset = data.MulticomponentDataset(val_datasets)
-val_mcdset.normalize_targets(scaler)
+# val_mcdset.normalize_targets(scaler)
 test_mcdset = data.MulticomponentDataset(test_datasets)
 # %%
-train_loader = data.build_dataloader(train_mcdset)
-val_loader = data.build_dataloader(val_mcdset, shuffle=False)
+train_loader = data.build_dataloader(train_mcdset, shuffle=True, num_workers=8)
+val_loader = data.build_dataloader(val_mcdset, shuffle=False, num_workers=8)
 test_loader = data.build_dataloader(test_mcdset, shuffle=False)
 # %%
 mcmp = nn.MulticomponentMessagePassing(
@@ -63,14 +86,14 @@ mcmp = nn.MulticomponentMessagePassing(
 # %%
 agg = nn.MeanAggregation()
 # %%
-output_transform = nn.UnscaleTransform.from_standard_scaler(scaler)
+# output_transform = nn.UnscaleTransform.from_standard_scaler(scaler)
 # %%
 ffn = nn.RegressionFFN(
     n_tasks=2,  # two tasks: EMISSION_MAX_NM and ABSORPTION_MAX_NM
     input_dim=mcmp.output_dim,
-    output_transform=output_transform,
+    # output_transform=output_transform,
     n_layers=1,
-    dropout=0.2,
+    dropout=0.15,
     activation='relu'
 )
 # %%
@@ -84,13 +107,17 @@ mcmpnn = multi.MulticomponentMPNN(
 )
 # %%
 trainer = pl.Trainer(
-    logger=False,
+    logger=True,
     enable_checkpointing=True,
     enable_progress_bar=True,
     accelerator="auto",
     devices=1,
-    max_epochs=20, # number of epochs to train for
+    max_epochs=100, # number of epochs to train for
 )
 # %%
 trainer.fit(mcmpnn, train_loader, val_loader)
+
+# %%
+results = trainer.test(mcmpnn, test_loader)
+
 # %%
